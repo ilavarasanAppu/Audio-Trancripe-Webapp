@@ -46,11 +46,12 @@ self.onmessage = async (event: MessageEvent) => {
             }
         } as any);
 
+        const result = output as any;
         self.postMessage({
             status: 'complete',
             output: {
-                text: output.text,
-                chunks: output.chunks ? output.chunks.map((c: any) => ({
+                text: result?.text || '',
+                chunks: result?.chunks ? result.chunks.map((c: any) => ({
                     text: c.text,
                     timestamp: c.timestamp
                 })) : []
