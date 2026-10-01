@@ -1,17 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Users, UserCheck, Edit3, Check, Search, FileAudio, 
-  RefreshCw 
+  RefreshCw, Mic, User, Users as UsersIcon
 } from 'lucide-react';
 import { api, type Speaker } from '../services/api';
 
+interface SpeakerWithGender extends Speaker {
+  gender: 'male' | 'female' | 'unknown' | 'group';
+}
+
 export const SpeakerClassifier: React.FC = () => {
-  const [speakers, setSpeakers] = useState<Speaker[]>([]);
+  const [speakers, setSpeakers] = useState<SpeakerWithGender[]>([]);
   const [editingSpeakerId, setEditingSpeakerId] = useState<number | null>(null);
   const [editName, setEditName] = useState('');
   const [searchFilter, setSearchFilter] = useState('');
   const [selectedSpeakerId, setSelectedSpeakerId] = useState<number | null>(null);
   const [speakerFilesData, setSpeakerFilesData] = useState<{ files: any[]; segments: any[] } | null>(null);
+  const [genderFilter, setGenderFilter] = useState<'all' | 'male' | 'female' | 'unknown' | 'group'>('all');
 
   useEffect(() => {
     loadSpeakers();
@@ -20,13 +25,17 @@ export const SpeakerClassifier: React.FC = () => {
   const loadSpeakers = async () => {
     try {
       const res = await api.getSpeakers();
-      setSpeakers(res.speakers || []);
+      const speakersWithGender: SpeakerWithGender[] = (res.speakers || []).map(s => ({
+        ...s,
+        gender: s.gender || 'unknown'
+      }));
+      setSpeakers(speakersWithGender);
     } catch (err) {
       console.error('Error loading speakers:', err);
     }
   };
 
-  const handleStartRename = (sp: Speaker) => {
+  const handleStartRename = (sp: SpeakerWithGender) => {
     setEditingSpeakerId(sp.id);
     setEditName(sp.name || sp.display_label);
   };
@@ -52,10 +61,30 @@ export const SpeakerClassifier: React.FC = () => {
     }
   };
 
-  const filteredSpeakers = speakers.filter(s => 
-    s.name.toLowerCase().includes(searchFilter.toLowerCase()) || 
-    s.display_label.toLowerCase().includes(searchFilter.toLowerCase())
-  );
+  const getGenderIcon = (gender: string) => {
+    switch (gender) {
+      case 'male': return <Mic className="text-blue-400" size={14} />;
+      case 'female': return <User className="text-pink-400" size={14} />;
+      case 'group': return <UsersIcon className="text-amber-400" size={14} />;
+      default: return <Mic className="text-gray-400" size={14} />;
+    }
+  };
+
+  const getGenderLabel = (gender: string) => {
+    switch (gender) {
+      case 'male': return 'Male';
+      case 'female': return 'Female';
+      case 'group': return 'Group';
+      default: return 'Unknown';
+    }
+  };
+
+  const filteredSpeakers = speakers.filter(s => {
+    const matchesSearch = s.name.toLowerCase().includes(searchFilter.toLowerCase()) || 
+      s.display_label.toLowerCase().includes(searchFilter.toLowerCase());
+    const matchesGender = genderFilter === 'all' || s.gender === genderFilter;
+    return matchesSearch && matchesGender;
+  });
 
   return (
     <div className="space-y-6">
@@ -79,16 +108,32 @@ export const SpeakerClassifier: React.FC = () => {
           </div>
         </div>
 
-        {/* Search Bar */}
-        <div className="relative mb-6">
-          <Search className="absolute left-3 top-3 text-gray-400" size={16} />
-          <input 
-            type="text" 
-            className="form-input pl-9 text-xs"
-            placeholder="Search by assigned speaker name or voice label..."
-            value={searchFilter}
-            onChange={(e) => setSearchFilter(e.target.value)}
-          />
+        {/* Search & Filter Bar */}
+        <div className="flex flex-wrap items-center gap-3 mb-6">
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="absolute left-3 top-3 text-gray-400" size={16} />
+            <input 
+              type="text" 
+              className="form-input pl-9 text-xs"
+              placeholder="Search by assigned speaker name or voice label..."
+              value={searchFilter}
+              onChange={(e) => setSearchFilter(e.target.value)}
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-gray-400">Gender:</label>
+            <select 
+              className="form-select text-xs w-auto"
+              value={genderFilter}
+              onChange={(e) => setGenderFilter(e.target.value as any)}
+            >
+              <option value="all">All</option>
+              <option value="male">Male</option>
+              <option value="female">Female</option>
+              <option value="unknown">Unknown</option>
+              <option value="group">Group</option>
+            </select>
+          </div>
         </div>
 
         {/* Speaker Profiles Grid */}
@@ -117,6 +162,25 @@ export const SpeakerClassifier: React.FC = () => {
                   </span>
                 </div>
 
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="font-bold text-sm text-white truncate max-w-[140px]">
+                    {sp.name}
+                  </h4>
+                  <div className="flex items-center gap-1.5">
+                    {getGenderIcon(sp.gender)}
+                    <span className="badge-pill bg-gray-700 text-gray-300 text-[10px] font-medium">
+                      {getGenderLabel(sp.gender)}
+                    </span>
+                    <button 
+                      className="btn-icon w-6 h-6 text-gray-400 hover:text-indigo-400"
+                      onClick={(e) => { e.stopPropagation(); handleStartRename(sp); }}
+                      title="Rename Speaker"
+                    >
+                      <Edit3 size={12} />
+                    </button>
+                  </div>
+                </div>
+
                 {editingSpeakerId === sp.id ? (
                   <div className="flex gap-1.5 mb-2" onClick={(e) => e.stopPropagation()}>
                     <input 
@@ -134,23 +198,10 @@ export const SpeakerClassifier: React.FC = () => {
                     </button>
                   </div>
                 ) : (
-                  <div className="flex justify-between items-center mb-2">
-                    <h4 className="font-bold text-sm text-white truncate max-w-[170px]">
-                      {sp.name}
-                    </h4>
-                    <button 
-                      className="btn-icon w-6 h-6 text-gray-400 hover:text-indigo-400"
-                      onClick={(e) => { e.stopPropagation(); handleStartRename(sp); }}
-                      title="Rename Speaker"
-                    >
-                      <Edit3 size={12} />
-                    </button>
-                  </div>
+                  <p className="text-xs text-gray-400 italic line-clamp-2 mb-3">
+                    "{sp.sample_text || 'Sample speech segment'}"
+                  </p>
                 )}
-
-                <p className="text-xs text-gray-400 italic line-clamp-2 mb-3">
-                  "{sp.sample_text || 'Sample speech segment'}"
-                </p>
 
                 {sp.sample_file_path && (
                   <div onClick={(e) => e.stopPropagation()}>

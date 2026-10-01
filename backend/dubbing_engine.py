@@ -233,12 +233,20 @@ async def synthesize_neural_voice(
     voice_id: str,
     output_path: str,
     rate_pct: int = 0,
-    pitch_hz: int = 0
+    pitch_hz: int = 0,
+    speaker_reference_audio: Optional[str] = None
 ) -> bool:
     """
     Synthesizes speech using Microsoft Edge Neural TTS with exact pitch & speed modulation.
+    If speaker_reference_audio is provided, extracts pitch/energy from it for matching.
     """
     try:
+        # If we have a reference audio, extract acoustic profile to match
+        if speaker_reference_audio and os.path.exists(speaker_reference_audio):
+            profile = extract_acoustic_profile(speaker_reference_audio, 0, 30)
+            if pitch_hz == 0:
+                pitch_hz = int(profile["median_f0"] - 140)  # Adjust relative to neutral
+        
         rate_str = f"+{rate_pct}%" if rate_pct >= 0 else f"{rate_pct}%"
         pitch_str = f"+{pitch_hz}Hz" if pitch_hz >= 0 else f"{pitch_hz}Hz"
         

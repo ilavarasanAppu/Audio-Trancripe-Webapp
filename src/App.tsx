@@ -4,6 +4,7 @@ import { Navbar, type TabType } from './components/Navbar';
 import { DubbingStudio } from './components/DubbingStudio';
 import { AudioRAG } from './components/AudioRAG';
 import { SpeakerClassifier } from './components/SpeakerClassifier';
+import { VoiceProfiles } from './components/VoiceProfiles';
 import { WorkCapture } from './components/WorkCapture';
 import { BrowserTranscriber } from './components/BrowserTranscriber';
 import { SettingsModal } from './components/SettingsModal';
@@ -64,6 +65,18 @@ function App() {
                 transition={{ duration: 0.25 }}
               >
                 <SpeakerClassifier />
+              </motion.div>
+            )}
+
+            {activeTab === 'voice_profiles' && (
+              <motion.div
+                key="voice_profiles"
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -15 }}
+                transition={{ duration: 0.25 }}
+              >
+                <VoiceProfiles />
               </motion.div>
             )}
 

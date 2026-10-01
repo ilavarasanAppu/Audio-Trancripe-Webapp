@@ -62,11 +62,20 @@ def extract_voice_features(y: np.ndarray, sr: int) -> np.ndarray:
     zcr_mean = np.mean(zcr)
     zcr_std = np.std(zcr)
 
-    # Concatenate into 46-dim feature vector
+    # 5. Pitch (F0) - for gender classification
+    try:
+        f0 = librosa.yin(y, fmin=65, fmax=400, sr=sr)
+        voiced_f0 = f0[f0 > 65]
+        median_f0 = float(np.median(voiced_f0)) if len(voiced_f0) > 0 else 140.0
+    except Exception:
+        median_f0 = 140.0
+
+    # Concatenate into 47-dim feature vector (46 + 1 for pitch)
     feature_vector = np.concatenate([
         mfcc_mean,
         mfcc_std,
-        [cent_mean, cent_std, rolloff_mean, rolloff_std, zcr_mean, zcr_std]
+        [cent_mean, cent_std, rolloff_mean, rolloff_std, zcr_mean, zcr_std],
+        [median_f0]
     ])
 
     # L2-normalize to unit length for cosine distance
@@ -117,7 +126,7 @@ def cluster_and_assign_speakers(
     cursor = conn.cursor()
 
     # Load existing speaker profiles from DB
-    cursor.execute("SELECT id, name, display_label, voice_embedding FROM speakers")
+    cursor.execute("SELECT id, name, display_label, voice_embedding, gender FROM speakers")
     existing_speakers = cursor.fetchall()
     
     known_speakers: List[Dict[str, Any]] = []
@@ -128,7 +137,8 @@ def cluster_and_assign_speakers(
                 "id": sp["id"],
                 "name": sp["name"],
                 "display_label": sp["display_label"],
-                "embedding": emb
+                "embedding": emb,
+                "gender": sp["gender"] or "unknown"
             })
 
     embeddings = np.array([ch["voice_embedding"] for ch in valid_chunks])
@@ -158,6 +168,18 @@ def cluster_and_assign_speakers(
         cluster_mask = (cluster_labels == c_id)
         cluster_mean_emb = np.mean(embeddings[cluster_mask], axis=0)
         cluster_mean_emb = cluster_mean_emb / (np.linalg.norm(cluster_mean_emb) + 1e-8)
+        
+        # Extract pitch from the last dimension of embeddings for gender classification
+        cluster_pitches = [ch["voice_embedding"][-1] for ch in valid_chunks if ch.get("voice_embedding") is not None]
+        cluster_median_pitch = float(np.median(cluster_pitches)) if cluster_pitches else 140.0
+        
+        # Classify gender based on median pitch
+        if cluster_median_pitch < 165:
+            cluster_gender = "male"
+        elif cluster_median_pitch > 195:
+            cluster_gender = "female"
+        else:
+            cluster_gender = "unknown"
 
         matched_speaker_id = None
         best_sim = -1.0
@@ -173,9 +195,9 @@ def cluster_and_assign_speakers(
             # Create a new speaker profile in DB
             new_label = f"Speaker {len(known_speakers) + len(cluster_to_speaker_id) + 1}"
             cursor.execute("""
-                INSERT INTO speakers (name, display_label, voice_embedding)
-                VALUES (?, ?, ?)
-            """, (new_label, new_label, json.dumps(cluster_mean_emb.tolist())))
+                INSERT INTO speakers (name, display_label, voice_embedding, gender)
+                VALUES (?, ?, ?, ?)
+            """, (new_label, new_label, json.dumps(cluster_mean_emb.tolist()), cluster_gender))
             new_id = cursor.lastrowid
             cluster_to_speaker_id[c_id] = new_id
             
@@ -183,7 +205,8 @@ def cluster_and_assign_speakers(
                 "id": new_id,
                 "name": new_label,
                 "display_label": new_label,
-                "embedding": cluster_mean_emb
+                "embedding": cluster_mean_emb,
+                "gender": cluster_gender
             })
         else:
             cluster_to_speaker_id[c_id] = matched_speaker_id

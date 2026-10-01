@@ -589,7 +589,7 @@ def list_speakers():
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT s.id, s.name, s.display_label, s.created_at,
+        SELECT s.id, s.name, s.display_label, s.created_at, s.gender,
                COUNT(c.id) as segment_count,
                MIN(f.filename) as sample_file,
                MIN(f.file_path) as sample_file_path,
@@ -645,6 +645,75 @@ def get_speaker_files(speaker_id: int):
         "files": files,
         "segments": segments
     }
+
+# ==================== VOICE MATCHING ENDPOINTS ====================
+
+class VoiceMatchRequest(BaseModel):
+    file_path: str
+    start_time: float
+    end_time: float
+
+@app.post("/api/voice/match")
+def match_voice(payload: VoiceMatchRequest):
+    """Find matching voice profile for an audio segment."""
+    from speaker_diarization import find_matching_voice, extract_segment_voice_features
+    
+    embedding = extract_segment_voice_features(payload.file_path, payload.start_time, payload.end_time)
+    if embedding is None:
+        raise HTTPException(status_code=400, detail="Could not extract voice features")
+    
+    match = find_matching_voice(embedding)
+    if match:
+        return {
+            "matched": True,
+            "speaker_id": match["id"],
+            "name": match["name"],
+            "gender": match["gender"],
+            "similarity": match["similarity"]
+        }
+    else:
+        return {
+            "matched": False,
+            "message": "No matching voice profile found"
+        }
+
+@app.get("/api/speakers/{speaker_id}/reference_audio")
+def get_speaker_reference_audio(speaker_id: int):
+    """Get a reference audio clip for a speaker (longest segment)."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT c.start_time, c.end_time, f.file_path
+        FROM transcript_chunks c
+        JOIN files f ON c.file_id = f.id
+        WHERE c.speaker_id = ?
+        ORDER BY (c.end_time - c.start_time) DESC
+        LIMIT 1
+    """, (speaker_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="No reference audio found for speaker")
+    
+    start = row["start_time"]
+    end = row["end_time"]
+    file_path = row["file_path"]
+    
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Source audio file not found")
+    
+    try:
+        duration = max(0.5, end - start)
+        y, sr = librosa.load(file_path, sr=22050, offset=start, duration=duration, mono=True)
+        
+        clip_name = f"ref_{speaker_id}_{abs(hash(file_path))}_{int(start*100)}.wav"
+        clip_path = os.path.join(STORAGE_DIR, clip_name)
+        
+        sf.write(clip_path, y, sr)
+        return FileResponse(clip_path, media_type="audio/wav")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate reference audio: {e}")
 
 # ==================== REAL-TIME DUBBING ENDPOINTS ====================
 
@@ -768,6 +837,7 @@ async def process_dubbing(payload: DubbingProcessRequest):
 
             # 2. Extract Acoustic Profile (pitch & emotion) for Same-Voice synthesis
             pitch_shift_hz = 0
+            speaker_reference_audio = None
             if payload.preserve_timbre and os.path.exists(source_file_path):
                 profile = extract_acoustic_profile(source_file_path, seg["start_time"], seg["end_time"])
                 original_f0 = profile["median_f0"]
@@ -775,6 +845,10 @@ async def process_dubbing(payload: DubbingProcessRequest):
                 voice_name = seg.get("voice_name") or INDIAN_LANGUAGES.get(target_lang, {}).get("default_voice", "ta-IN-ValluvarNeural")
                 base_f0 = 130.0 if "male" in voice_name.lower() or "valluvar" in voice_name.lower() or "kumar" in voice_name.lower() else 215.0
                 pitch_shift_hz = int(np.clip(original_f0 - base_f0, -40, 40))
+                
+                # Get speaker reference audio for voice matching
+                if seg.get("speaker_id"):
+                    speaker_reference_audio = f"/api/speakers/{seg['speaker_id']}/reference_audio"
 
             voice_name = seg.get("voice_name") or INDIAN_LANGUAGES.get(target_lang, {}).get("default_voice", "ta-IN-ValluvarNeural")
             raw_audio_name = f"dub_raw_{payload.project_id}_{seg['id']}.wav"
@@ -789,7 +863,7 @@ async def process_dubbing(payload: DubbingProcessRequest):
                     speaker = "arvind"
                 synth_ok = await synthesize_sarvam_voice(trans_text, target_lang, speaker, raw_audio_path, sarvam_key, pitch_offset=int(pitch_shift_hz/5))
             else:
-                synth_ok = await synthesize_neural_voice(trans_text, voice_name, raw_audio_path, pitch_hz=pitch_shift_hz)
+                synth_ok = await synthesize_neural_voice(trans_text, voice_name, raw_audio_path, pitch_hz=pitch_shift_hz, speaker_reference_audio=speaker_reference_audio)
 
             if synth_ok and os.path.exists(raw_audio_path):
                 # 4. Time Sync & Stretch to fit video/original segment duration

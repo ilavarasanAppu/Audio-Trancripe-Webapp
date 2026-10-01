@@ -8,7 +8,7 @@ import { api, type AudioFile } from '../services/api';
 export const WorkCapture: React.FC = () => {
   const [files, setFiles] = useState<AudioFile[]>([]);
   const [selectedFileIds, setSelectedFileIds] = useState<number[]>([]);
-  const [targetDir, setTargetDir] = useState('c:\\Users\\ela\\Downloads\\CapturedAudio');
+  const [targetDir, setTargetDir] = useState('');
   const [isExporting, setIsExporting] = useState(false);
   const [exportResult, setExportResult] = useState<any | null>(null);
 

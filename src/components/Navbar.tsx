@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { api } from '../services/api';
 
-export type TabType = 'dubbing' | 'rag' | 'speakers' | 'work_capture' | 'browser_transcribe';
+export type TabType = 'dubbing' | 'rag' | 'speakers' | 'voice_profiles' | 'work_capture' | 'browser_transcribe';
 
 interface NavbarProps {
   activeTab: TabType;
@@ -34,8 +34,9 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, onOpenS
     { id: 'dubbing', label: '1. AI Dubbing Studio', icon: Mic2, desc: 'Realtime & YouTube Style' },
     { id: 'rag', label: '2. Audio Q&A & Search', icon: Search, desc: 'Semantic Vector Retrieval' },
     { id: 'speakers', label: '3. Voice Classifier', icon: Users, desc: 'Group By Person' },
-    { id: 'work_capture', label: '4. Work Capture', icon: FolderOutput, desc: 'Batch Copy & Export' },
-    { id: 'browser_transcribe', label: '5. Fast Transcriber', icon: Sparkles, desc: 'Client WASM Whisper' },
+    { id: 'voice_profiles', label: '4. Voice Profiles', icon: Users, desc: 'Identity & Matching' },
+    { id: 'work_capture', label: '5. Work Capture', icon: FolderOutput, desc: 'Batch Copy & Export' },
+    { id: 'browser_transcribe', label: '6. Fast Transcriber', icon: Sparkles, desc: 'Client WASM Whisper' },
   ];
 
   return (

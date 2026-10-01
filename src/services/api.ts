@@ -34,6 +34,7 @@ export interface Speaker {
   sample_start?: number;
   sample_end?: number;
   sample_text?: string;
+  gender?: 'male' | 'female' | 'unknown' | 'group';
 }
 
 export interface RAGCitation {
@@ -277,6 +278,24 @@ export const api = {
   getSpeakerFiles: async (speakerId: number) => {
     const res = await fetch(`${API_BASE}/speakers/${speakerId}/files`);
     return res.json();
+  },
+
+  // Voice Matching
+  matchVoice: async (payload: { file_path: string; start_time: number; end_time: number }) => {
+    const res = await fetch(`${API_BASE}/voice/match`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || 'Voice match failed');
+    }
+    return res.json();
+  },
+  
+  getSpeakerReferenceAudio: (speakerId: number) => {
+    return `${API_BASE}/speakers/${speakerId}/reference_audio`;
   },
 
   // Dubbing

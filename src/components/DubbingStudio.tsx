@@ -3,7 +3,7 @@ import {
   Mic2, Play, Pause, Volume2, Download, RefreshCw, Sparkles, 
   Languages, FileAudio, Loader2, Music, 
   Sliders, Captions, Folder, Radio, Monitor,
-  CheckCircle2, StopCircle
+  CheckCircle2, StopCircle, Search, List
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { api, type AudioFile, type DubbingProject, type DubbingSegment, type LanguageVoices, type CustomModelItem } from '../services/api';
@@ -27,7 +27,7 @@ export const DubbingStudio: React.FC = () => {
   const [selectedCustomModel, setSelectedCustomModel] = useState<string>('');
   
   // 3. Folder Batch Mode State
-  const [batchFolderDir, setBatchFolderDir] = useState('c:\\Users\\ela\\Downloads\\Github\\Audio-Trancripe---Webapp--windows\\backend\\storage');
+  const [batchFolderDir, setBatchFolderDir] = useState('');
   const [batchOutputDir, setBatchOutputDir] = useState('');
   const [isBatchProcessing, setIsBatchProcessing] = useState(false);
   const [batchResult, setBatchResult] = useState<any | null>(null);
@@ -54,8 +54,38 @@ export const DubbingStudio: React.FC = () => {
   const [dubbedVolume, setDubbedVolume] = useState(1.0);
   const [activeTrack, setActiveTrack] = useState<'dubbed' | 'original' | 'both'>('dubbed');
 
+  // Transcript Search State
+  const [transcriptSearchQuery, setTranscriptSearchQuery] = useState('');
+  const [transcriptCurrentTime, setTranscriptCurrentTime] = useState(0);
+
   const originalAudioRef = useRef<HTMLAudioElement | null>(null);
   const dubbedAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Filter segments based on search query
+  const filteredSegments = segments.filter(seg => {
+    if (!transcriptSearchQuery.trim()) return true;
+    const query = transcriptSearchQuery.toLowerCase();
+    return (
+      (seg.original_text || '').toLowerCase().includes(query) ||
+      (seg.translated_text || '').toLowerCase().includes(query)
+    );
+  });
+
+  // Highlight search text in transcript
+  const highlightSearchText = (text: string, query: string) => {
+    if (!query.trim()) return <span>{text}</span>;
+    
+    const parts = text.split(new RegExp(`(${query})`, 'gi'));
+    return (
+      <span>
+        {parts.map((part, i) => 
+          part.toLowerCase() === query.toLowerCase() 
+            ? <mark key={i} className="bg-amber-500/30 text-amber-200 px-1 rounded">{part}</mark>
+            : <span key={i}>{part}</span>
+        )}
+      </span>
+    );
+  };
 
   useEffect(() => {
     loadFiles();
@@ -957,6 +987,97 @@ export const DubbingStudio: React.FC = () => {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* TRANSCRIPT SEARCH & VIEWER */}
+      {sourceMode === 'file' && selectedFile && segments.length > 0 && (
+        <div className="professional-card">
+          <div className="card-header-traditional">
+            <div className="flex justify-between items-center">
+              <div>
+                <h3 className="card-title">
+                  <List className="text-indigo-400" size={18} />
+                  <span>Full Transcript Search</span>
+                </h3>
+                <p className="card-subtitle">
+                  Search within this file's transcript and jump to exact timestamps
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="mb-4">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+              <input
+                type="text"
+                className="form-input pl-10"
+                placeholder="Search transcript (e.g. 'machine learning', 'hello world')..."
+                value={transcriptSearchQuery}
+                onChange={(e) => setTranscriptSearchQuery(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+            {filteredSegments.map((seg) => (
+              <div key={seg.id} className={`p-3 rounded-lg border transition-all ${
+                transcriptCurrentTime >= seg.start_time && transcriptCurrentTime <= seg.end_time
+                  ? 'bg-indigo-950/30 border-indigo-500/50 ring-1 ring-indigo-500/20'
+                  : 'bg-gray-900 border-gray-800 hover:border-gray-700'
+              }`}>
+                <div className="flex justify-between items-start gap-3 mb-2">
+                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                    <span className="font-mono text-xs px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 font-bold">
+                      [{seg.start_time.toFixed(1)}s - {seg.end_time.toFixed(1)}s]
+                    </span>
+                    <span className="text-xs text-gray-400">
+                      Duration: {(seg.end_time - seg.start_time).toFixed(1)}s
+                    </span>
+                    {seg.speaker_tag && (
+                      <span className="badge-pill bg-indigo-500/20 text-indigo-300 text-[10px]">
+                        {seg.speaker_tag}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <audio 
+                      controls 
+                      src={api.getClipUrl(selectedFile.file_path, seg.start_time, seg.end_time)}
+                      className="h-7 max-w-[180px]"
+                    />
+                    <button
+                      className="btn-icon text-indigo-400 hover:text-indigo-300"
+                      title="Jump to this timestamp"
+                      onClick={() => {
+                        setTranscriptCurrentTime(seg.start_time);
+                        if (originalAudioRef.current) {
+                          originalAudioRef.current.currentTime = seg.start_time;
+                          originalAudioRef.current.play().catch(console.error);
+                        }
+                      }}
+                    >
+                      <Play size={14} />
+                    </button>
+                  </div>
+                </div>
+                <p className="text-sm text-gray-200 leading-relaxed select-all">
+                  {highlightSearchText(seg.original_text || '', transcriptSearchQuery)}
+                </p>
+                {seg.translated_text && (
+                  <p className="text-sm text-indigo-300 leading-relaxed mt-1 select-all">
+                    {highlightSearchText(seg.translated_text, transcriptSearchQuery)}
+                  </p>
+                )}
+              </div>
+            ))}
+            {filteredSegments.length === 0 && transcriptSearchQuery && (
+              <div className="text-center py-8 text-gray-500 text-sm">
+                No matches found for "{transcriptSearchQuery}"
+              </div>
+            )}
           </div>
         </div>
       )}

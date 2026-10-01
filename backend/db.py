@@ -87,6 +87,7 @@ def init_db():
         name TEXT,
         display_label TEXT,
         voice_embedding TEXT,
+        gender TEXT DEFAULT 'unknown',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)

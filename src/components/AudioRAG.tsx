@@ -7,7 +7,7 @@ import {
 import { api, type AudioFile, type RAGQueryResult } from '../services/api';
 
 export const AudioRAG: React.FC = () => {
-  const [scanDir, setScanDir] = useState('c:\\Users\\ela\\Downloads\\Github\\Audio-Trancripe---Webapp--windows\\backend\\storage');
+  const [scanDir, setScanDir] = useState('');
   const [isRecursive, setIsRecursive] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
   const [isIngesting, setIsIngesting] = useState(false);
