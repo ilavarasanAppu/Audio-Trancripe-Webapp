@@ -27,7 +27,7 @@ export const DubbingStudio: React.FC = () => {
   const [selectedCustomModel, setSelectedCustomModel] = useState<string>('');
   
   // 3. Folder Batch Mode State
-  const [batchFolderDir, setBatchFolderDir] = useState('c:\\Users\\ela\\Downloads\\Github\\Audio-Trancripe---Webapp--windows\\backend\\storage');
+  const [batchFolderDir, setBatchFolderDir] = useState('');
   const [batchOutputDir, setBatchOutputDir] = useState('');
   const [isBatchProcessing, setIsBatchProcessing] = useState(false);
   const [batchResult, setBatchResult] = useState<any | null>(null);
@@ -52,7 +52,7 @@ export const DubbingStudio: React.FC = () => {
   const [duration, setDuration] = useState(0);
   const [originalVolume, setOriginalVolume] = useState(0.25);
   const [dubbedVolume, setDubbedVolume] = useState(1.0);
-  const [activeTrack, setActiveTrack] = useState<'dubbed' | 'original' | 'both'>('dubbed');
+  const [activeTrack, setActiveTrack] = useState<'dubbed' | 'original' | 'both'>('original');
 
   const originalAudioRef = useRef<HTMLAudioElement | null>(null);
   const dubbedAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -61,7 +61,9 @@ export const DubbingStudio: React.FC = () => {
     loadFiles();
     loadVoices();
     loadCustomModels();
+    window.addEventListener('custom-models-updated', loadCustomModels);
     return () => {
+      window.removeEventListener('custom-models-updated', loadCustomModels);
       stopLiveCapture();
     };
   }, []);
@@ -71,8 +73,13 @@ export const DubbingStudio: React.FC = () => {
       const data = await api.getCustomModels();
       if (data && data.models) {
         setCustomModels(data.models);
-        if (data.selected_custom_model) {
-          setSelectedCustomModel(data.selected_custom_model);
+        const selectedPath = data.selected_custom_model || '';
+        setSelectedCustomModel(selectedPath);
+        if (selectedPath) {
+          setAsrEngine(`custom:${selectedPath}`);
+        } else {
+          const settings = await api.getSettings();
+          setAsrEngine(settings.default_asr_engine || 'faster_whisper');
         }
       }
     } catch (err) {
@@ -113,6 +120,19 @@ export const DubbingStudio: React.FC = () => {
     }
   }, [targetLang, availableVoices]);
 
+  const selectFile = (fileId: number) => {
+    originalAudioRef.current?.pause();
+    dubbedAudioRef.current?.pause();
+    if (originalAudioRef.current) originalAudioRef.current.currentTime = 0;
+    if (dubbedAudioRef.current) dubbedAudioRef.current.currentTime = 0;
+    setSelectedFileId(fileId);
+    setIsPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+    setCurrentProject(null);
+    setSegments([]);
+  };
+
   // Upload handler for single file
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.[0]) return;
@@ -122,7 +142,7 @@ export const DubbingStudio: React.FC = () => {
     try {
       const uploaded = await api.uploadFile(file);
       await loadFiles();
-      setSelectedFileId(uploaded.id);
+      selectFile(uploaded.id);
       setProcessStatus('File ready. Click "Start Dubbing Pipeline" to begin.');
     } catch (err: any) {
       setProcessStatus(`Upload error: ${err.message}`);
@@ -144,7 +164,13 @@ export const DubbingStudio: React.FC = () => {
       const realAsrEngine = isCustomAsr ? 'faster_whisper' : asrEngine;
       const customPath = isCustomAsr ? asrEngine.replace('custom:', '') : (selectedCustomModel || undefined);
 
-      if (!selectedFile || selectedFile.status !== 'indexed') {
+      if (customPath && !customModels.some((model) => model.path === customPath && model.asr_compatible)) {
+        setProcessStatus('This model is not runnable by Faster-Whisper. Choose a CTranslate2 Whisper folder containing model.bin and config.json in Settings.');
+        setIsProcessing(false);
+        return;
+      }
+
+      if (!selectedFile || selectedFile.status !== 'indexed' || (selectedFile.chunk_count ?? 0) === 0) {
         setProgress(30);
         await api.ingestFile(selectedFileId, 'base', sourceLang, realAsrEngine, customPath);
         await loadFiles();
@@ -311,13 +337,23 @@ export const DubbingStudio: React.FC = () => {
       dubbedAudioRef.current?.pause();
       setIsPlaying(false);
     } else {
-      if (activeTrack === 'original' || activeTrack === 'both') {
-        originalAudioRef.current?.play().catch(console.error);
+      const playOriginal = activeTrack === 'original' || activeTrack === 'both';
+      const playDubbed = activeTrack === 'dubbed' || activeTrack === 'both';
+      const players = [
+        ...(playOriginal && originalAudioRef.current ? [originalAudioRef.current] : []),
+        ...(playDubbed && dubbedAudioRef.current ? [dubbedAudioRef.current] : []),
+      ];
+      if (players.length === 0) {
+        setProcessStatus(playDubbed ? 'Create a dubbed track before playing it.' : 'Choose an audio file before playback.');
+        setIsPlaying(false);
+        return;
       }
-      if (activeTrack === 'dubbed' || activeTrack === 'both') {
-        dubbedAudioRef.current?.play().catch(console.error);
-      }
-      setIsPlaying(true);
+      void Promise.all(players.map((player) => player.play()))
+        .then(() => setIsPlaying(true))
+        .catch((err: unknown) => {
+          setIsPlaying(false);
+          setProcessStatus(`Audio playback failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
     }
   };
 
@@ -339,6 +375,20 @@ export const DubbingStudio: React.FC = () => {
     } else {
       if (originalAudioRef.current) originalAudioRef.current.volume = originalVolume;
       if (dubbedAudioRef.current) dubbedAudioRef.current.volume = dubbedVolume;
+    }
+    if (isPlaying) {
+      originalAudioRef.current?.pause();
+      dubbedAudioRef.current?.pause();
+      setIsPlaying(false);
+    }
+  };
+
+  const handleAsrEngineChange = (value: string) => {
+    setAsrEngine(value);
+    if (value.startsWith('custom:')) {
+      setSelectedCustomModel(value.slice('custom:'.length));
+    } else if (value === 'faster_whisper') {
+      setSelectedCustomModel('');
     }
   };
 
@@ -503,13 +553,16 @@ export const DubbingStudio: React.FC = () => {
             <select
               className="form-select text-xs"
               value={asrEngine}
-              onChange={(e) => setAsrEngine(e.target.value)}
+              onChange={(e) => handleAsrEngineChange(e.target.value)}
             >
-              <option value="faster_whisper">Faster-Whisper (Local CPU)</option>
+              <option value="faster_whisper">Faster-Whisper (Local · GPU when available)</option>
               <option value="sarvam_saaras">Sarvam Saaras v2 (Cloud)</option>
-              {customModels.map((m, idx) => (
-                <option key={idx} value={`custom:${m.path}`}>
-                  Custom: {m.name} ({m.extension})
+              {selectedCustomModel && !customModels.some((model) => model.path === selectedCustomModel) && (
+                <option value={`custom:${selectedCustomModel}`} disabled>Unavailable ASR model: {selectedCustomModel}</option>
+              )}
+              {customModels.filter((model) => model.is_directory).map((m, idx) => (
+                <option key={idx} value={`custom:${m.path}`} disabled={!m.asr_compatible}>
+                  {m.asr_compatible ? `Custom ASR: ${m.name}` : `${m.name} (not Faster-Whisper compatible)`}
                 </option>
               ))}
             </select>
@@ -554,7 +607,7 @@ export const DubbingStudio: React.FC = () => {
                 <select 
                   className="form-select"
                   value={selectedFileId || ''}
-                  onChange={(e) => setSelectedFileId(Number(e.target.value))}
+                  onChange={(e) => selectFile(Number(e.target.value))}
                   disabled={isProcessing}
                 >
                   {files.map((f) => (
@@ -604,33 +657,33 @@ export const DubbingStudio: React.FC = () => {
         {/* FOLDER BATCH CONTROLS */}
         {sourceMode === 'folder' && (
           <div className="pt-4 border-t border-white/10 space-y-4">
-            <div className="p-4 rounded-xl bg-gray-800/50 border border-gray-700">
+            <div className="batch-folder-panel">
               <h3 className="text-sm font-bold text-indigo-300 flex items-center gap-2 mb-2">
                 <Folder size={16} />
                 <span>Batch Folder Translation & Dubbing</span>
               </h3>
-              <p className="text-xs text-gray-400 mb-4">
-                Enter any directory path on your Windows machine. All audio and video files inside will be transcribed and dubbed with same-voice pitch matching.
+              <p className="batch-folder-help">
+                Choose a folder path on this computer. Supported audio and video files inside it will be queued for dubbing.
               </p>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div className="batch-folder-fields">
                 <div className="form-group">
-                  <label className="form-label">Source Folder Path (Windows)</label>
+                  <label className="form-label">Source folder path</label>
                   <input
                     type="text"
-                    className="form-input text-xs font-mono"
-                    placeholder="e.g. C:\Users\ela\Downloads\Videos"
+                    className="form-input folder-path-input"
+                    placeholder="Paste a folder path, e.g. C:\Media\Videos"
                     value={batchFolderDir}
                     onChange={(e) => setBatchFolderDir(e.target.value)}
                   />
                 </div>
 
                 <div className="form-group">
-                  <label className="form-label">Target Output Folder (Optional)</label>
+                  <label className="form-label">Output folder <span className="folder-path-optional">Optional</span></label>
                   <input
                     type="text"
-                    className="form-input text-xs font-mono"
-                    placeholder="Leave empty for auto: SourceFolder\Dubbed_TA"
+                    className="form-input folder-path-input"
+                    placeholder="Leave blank to create an output folder automatically"
                     value={batchOutputDir}
                     onChange={(e) => setBatchOutputDir(e.target.value)}
                   />
@@ -638,7 +691,7 @@ export const DubbingStudio: React.FC = () => {
               </div>
 
               <button
-                className="btn-primary flex items-center gap-2 px-6 py-2.5"
+                className="btn-primary batch-folder-submit"
                 onClick={handleStartBatchFolder}
                 disabled={isBatchProcessing || !batchFolderDir.trim()}
               >
@@ -746,9 +799,9 @@ export const DubbingStudio: React.FC = () => {
       {/* DUAL-TRACK AUDIO PLAYER & TIMELINE (Mode 1) */}
       {sourceMode === 'file' && selectedFile && (
         <div className="professional-card">
-          <div className="card-header-traditional">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-indigo-600/20 text-indigo-400 flex items-center justify-center">
+          <div className="card-header-traditional audio-player-header">
+            <div className="audio-file-title">
+              <div className="audio-file-icon">
                 <Music size={20} />
               </div>
               <div>
@@ -760,22 +813,24 @@ export const DubbingStudio: React.FC = () => {
             </div>
 
             {/* Track Switcher */}
-            <div className="flex items-center gap-1.5 bg-gray-800 p-1 rounded-lg border border-gray-700">
+            <div className="audio-track-switcher">
               <button
-                className={`px-3 py-1 rounded text-xs font-semibold transition-all ${activeTrack === 'dubbed' ? 'bg-indigo-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}
+                className={`audio-track-button ${activeTrack === 'dubbed' ? 'active' : ''}`}
                 onClick={() => handleTrackChange('dubbed')}
+                disabled={!currentProject?.result_audio_path}
               >
                 Dubbed ({targetLang.toUpperCase()})
               </button>
               <button
-                className={`px-3 py-1 rounded text-xs font-semibold transition-all ${activeTrack === 'original' ? 'bg-indigo-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}
+                className={`audio-track-button ${activeTrack === 'original' ? 'active' : ''}`}
                 onClick={() => handleTrackChange('original')}
               >
                 Original Audio
               </button>
               <button
-                className={`px-3 py-1 rounded text-xs font-semibold transition-all ${activeTrack === 'both' ? 'bg-indigo-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}
+                className={`audio-track-button ${activeTrack === 'both' ? 'active' : ''}`}
                 onClick={() => handleTrackChange('both')}
+                disabled={!currentProject?.result_audio_path}
               >
                 Mixed / Voiceover
               </button>
@@ -785,6 +840,7 @@ export const DubbingStudio: React.FC = () => {
           <audio 
             ref={originalAudioRef} 
             src={api.getStreamUrl(selectedFile.file_path)} 
+            onError={() => setProcessStatus('Could not load the source audio. Check that the file still exists and the backend is running.')}
             onTimeUpdate={() => setCurrentTime(originalAudioRef.current?.currentTime || 0)}
             onLoadedMetadata={() => setDuration(originalAudioRef.current?.duration || selectedFile.duration || 0)}
             onEnded={() => setIsPlaying(false)}
@@ -793,11 +849,13 @@ export const DubbingStudio: React.FC = () => {
             <audio 
               ref={dubbedAudioRef} 
               src={api.getStreamUrl(currentProject.result_audio_path)} 
+              onError={() => setProcessStatus('Could not load the dubbed audio file.')}
+              onEnded={() => setIsPlaying(false)}
             />
           )}
 
           {/* Timeline Bar */}
-          <div className="mb-4">
+          <div className="audio-timeline">
             <input 
               type="range" 
               min={0} 
@@ -805,28 +863,29 @@ export const DubbingStudio: React.FC = () => {
               step={0.1}
               value={currentTime} 
               onChange={handleTimeSeek}
-              className="w-full accent-indigo-500 cursor-pointer h-2 bg-gray-800 rounded-lg"
+              className="audio-seek"
             />
-            <div className="flex justify-between text-xs text-gray-400 mt-1 font-mono">
+            <div className="audio-time-labels">
               <span>{Math.floor(currentTime)}s</span>
               <span>{Math.floor(duration)}s</span>
             </div>
           </div>
 
           {/* Playback Controls & Volume Crossfaders */}
-          <div className="flex flex-wrap items-center justify-between gap-4 pt-2">
-            <div className="flex items-center gap-4">
+          <div className="audio-controls">
+            <div className="audio-volume-controls">
               <button 
-                className="w-11 h-11 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white flex items-center justify-center shadow-lg transition-transform hover:scale-105"
+                className="audio-play-button"
                 onClick={togglePlayPause}
+                aria-label={isPlaying ? 'Pause audio' : 'Play audio'}
               >
                 {isPlaying ? <Pause size={18} /> : <Play size={18} className="ml-0.5" />}
               </button>
 
-              <div className="flex items-center gap-3 bg-gray-800 px-3.5 py-2 rounded-lg border border-gray-700">
+              <div className="audio-volume-control">
                 <Volume2 size={16} className="text-indigo-400" />
-                <div className="flex flex-col">
-                  <span className="text-[11px] text-gray-400 uppercase font-semibold">Dubbed Speech Volume</span>
+                <div className="audio-volume-details">
+                  <span>Dubbed speech</span>
                   <input 
                     type="range" min={0} max={1} step={0.05} 
                     value={dubbedVolume}
@@ -835,15 +894,16 @@ export const DubbingStudio: React.FC = () => {
                       setDubbedVolume(v);
                       if (dubbedAudioRef.current) dubbedAudioRef.current.volume = v;
                     }}
-                    className="accent-indigo-500 w-24 h-1.5"
+                    className="audio-volume-slider"
+                    disabled={!currentProject?.result_audio_path}
                   />
                 </div>
               </div>
 
-              <div className="flex items-center gap-3 bg-gray-800 px-3.5 py-2 rounded-lg border border-gray-700">
+              <div className="audio-volume-control">
                 <Volume2 size={16} className="text-gray-400" />
-                <div className="flex flex-col">
-                  <span className="text-[11px] text-gray-400 uppercase font-semibold">Original Background Volume</span>
+                <div className="audio-volume-details">
+                  <span>Original audio</span>
                   <input 
                     type="range" min={0} max={1} step={0.05} 
                     value={originalVolume}
@@ -852,16 +912,16 @@ export const DubbingStudio: React.FC = () => {
                       setOriginalVolume(v);
                       if (originalAudioRef.current) originalAudioRef.current.volume = v;
                     }}
-                    className="accent-gray-400 w-24 h-1.5"
+                    className="audio-volume-slider"
                   />
                 </div>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="audio-player-actions">
               <button 
                 onClick={downloadDubbedSRT} 
-                className="btn-secondary text-xs flex items-center gap-2"
+                className="btn-secondary audio-action-button"
                 disabled={segments.length === 0}
               >
                 <Captions size={14} />
@@ -872,7 +932,7 @@ export const DubbingStudio: React.FC = () => {
                 <a 
                   href={api.getStreamUrl(currentProject.result_audio_path)}
                   download={`dubbed_${targetLang}_${selectedFile.filename}.wav`}
-                  className="btn-primary text-xs flex items-center gap-2"
+                  className="btn-primary audio-action-button"
                 >
                   <Download size={14} />
                   <span>Download Dubbed Audio Track</span>

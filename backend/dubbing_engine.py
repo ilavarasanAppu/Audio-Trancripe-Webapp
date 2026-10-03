@@ -338,8 +338,11 @@ async def build_dubbed_audio_track(
     Stitches all dubbed segments onto a silent timeline master track.
     """
     try:
+        if not segments:
+            return False
         master_samples = int(total_duration * sr) + sr
         master_audio = np.zeros(master_samples, dtype=np.float32)
+        audible_segments = 0
 
         for seg in segments:
             audio_path = seg.get("audio_path")
@@ -347,6 +350,8 @@ async def build_dubbed_audio_track(
                 continue
             
             y, _ = librosa.load(audio_path, sr=sr, mono=True)
+            if y.size == 0 or not np.all(np.isfinite(y)) or float(np.max(np.abs(y))) < 1e-5:
+                continue
             start_sample = int(seg["start_time"] * sr)
             end_sample = start_sample + len(y)
             
@@ -354,6 +359,10 @@ async def build_dubbed_audio_track(
                 actual_end = min(end_sample, len(master_audio))
                 y_fit = y[:actual_end - start_sample]
                 master_audio[start_sample:actual_end] += y_fit
+                audible_segments += 1
+
+        if audible_segments == 0 or float(np.max(np.abs(master_audio))) < 1e-5:
+            return False
 
         max_val = np.max(np.abs(master_audio))
         if max_val > 0.95:

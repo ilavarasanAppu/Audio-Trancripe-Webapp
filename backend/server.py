@@ -5,10 +5,13 @@ import asyncio
 import json
 import mimetypes
 import uuid
+import tempfile
 from typing import List, Dict, Any, Optional
-from fastapi import FastAPI, UploadFile, File, Form, Query, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Form, Query, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel
 import soundfile as sf
 import librosa
@@ -28,10 +31,59 @@ from dubbing_engine import (
     fit_audio_to_duration, build_dubbed_audio_track, extract_acoustic_profile
 )
 from doctor import run_diagnostics, auto_fix_missing
+from error_logging import ERROR_LOG_PATH, write_error
 
 init_db()
 
 app = FastAPI(title="VaniScript AI - Dubbing & Audio RAG Studio")
+
+
+class ClientErrorReport(BaseModel):
+    error_code: str = "BROWSER_ERROR"
+    error_details: str
+    source_file: Optional[str] = None
+    error_line: Optional[int] = None
+    error_column: Optional[int] = None
+    stack: Optional[str] = None
+    page_url: Optional[str] = None
+    user_agent: Optional[str] = None
+    occurred_at: Optional[str] = None
+
+
+@app.exception_handler(StarletteHTTPException)
+async def log_http_error(request: Request, exc: StarletteHTTPException):
+    write_error(
+        error_code=f"HTTP_{exc.status_code}",
+        error_details=exc.detail,
+        exc=exc,
+        request=request,
+        context={"status_code": exc.status_code},
+    )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers)
+
+
+@app.exception_handler(RequestValidationError)
+async def log_validation_error(request: Request, exc: RequestValidationError):
+    safe_errors = [{"type": error.get("type"), "location": error.get("loc"), "message": error.get("msg")} for error in exc.errors()]
+    write_error(
+        error_code="REQUEST_VALIDATION_ERROR",
+        error_details="Request validation failed",
+        exc=exc,
+        request=request,
+        context={"status_code": 422, "validation_errors": safe_errors},
+    )
+    return JSONResponse(status_code=422, content={"detail": safe_errors})
+
+
+@app.exception_handler(Exception)
+async def log_unhandled_error(request: Request, exc: Exception):
+    write_error(
+        error_code="UNHANDLED_SERVER_ERROR",
+        error_details=str(exc) or type(exc).__name__,
+        exc=exc,
+        request=request,
+    )
+    return JSONResponse(status_code=500, content={"detail": "An unexpected server error occurred. Check the backend error log for details."})
 
 app.add_middleware(
     CORSMiddleware,
@@ -131,12 +183,33 @@ class SettingsUpdateRequest(BaseModel):
     custom_models_dirs: Optional[List[str]] = None
     selected_custom_model: Optional[str] = None
 
+
+@app.post("/api/errors/log")
+def log_client_error(report: ClientErrorReport, request: Request):
+    write_error(
+        error_code=report.error_code,
+        error_details=report.error_details,
+        request=request,
+        source_file=report.source_file,
+        error_line=report.error_line,
+        stack=report.stack,
+        context={
+            "error_column": report.error_column,
+            "page_url": report.page_url,
+            "user_agent": report.user_agent,
+            "client_occurred_at": report.occurred_at,
+        },
+    )
+    return {"status": "logged", "log_file": ERROR_LOG_PATH}
+
 @app.get("/api/health")
 def health_check():
+    from transcription import get_asr_runtime
     return {
         "status": "online",
         "service": "VaniScript AI Backend",
-        "supported_languages": list(INDIAN_LANGUAGES.keys())
+        "supported_languages": list(INDIAN_LANGUAGES.keys()),
+        "asr_runtime": get_asr_runtime(),
     }
 
 @app.get("/api/doctor")
@@ -411,6 +484,8 @@ async def ingest_file(payload: IngestRequest):
         full_transcript = transcription_result["full_transcript"]
         duration = transcription_result["duration"]
         raw_chunks = transcription_result["chunks"]
+        if not raw_chunks or not full_transcript.strip():
+            raise RuntimeError("No speech was recognized. The file was not indexed; check the audio and selected ASR model, then retry.")
 
         # 2. Extract Acoustic Voice Features for each chunk
         chunks_with_features = []
@@ -464,6 +539,44 @@ async def ingest_file(payload: IngestRequest):
         conn.commit()
         conn.close()
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
+
+
+@app.post("/api/transcribe")
+async def transcribe_uploaded_audio(file: UploadFile = File(...), language: str = Form("auto")):
+    """Transcribe a selected file with the local Faster-Whisper GPU runtime."""
+    suffix = os.path.splitext(file.filename or "audio.wav")[1] or ".wav"
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, dir=STORAGE_DIR) as temp_file:
+            temp_path = temp_file.name
+            shutil.copyfileobj(file.file, temp_file)
+        if os.path.getsize(temp_path) == 0:
+            raise HTTPException(status_code=400, detail="The selected audio file is empty.")
+        model_path = get_setting("selected_custom_model") or get_setting("whisper_model_size", "base")
+        result = transcribe_audio_file(
+            file_path=temp_path,
+            language=language,
+            model_size=model_path,
+            engine="faster_whisper",
+        )
+        if not result.get("full_transcript", "").strip() or not result.get("chunks"):
+            raise RuntimeError("No speech was recognized. Check the audio and selected ASR model, then retry.")
+        from transcription import get_asr_runtime
+        return {**result, "runtime": get_asr_runtime(), "model": model_path}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        write_error(
+            error_code="TRANSCRIPTION_FAILED",
+            error_details=str(exc),
+            exc=exc,
+            request=None,
+            context={"media_file_path": file.filename, "asr_engine": "faster_whisper"},
+        )
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}")
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
 
 @app.post("/api/ingest_all")
 async def ingest_all_pending(background_tasks: BackgroundTasks):
@@ -796,8 +909,9 @@ async def process_dubbing(payload: DubbingProcessRequest):
                 synced_audio_name = f"dub_sync_{payload.project_id}_{seg['id']}.wav"
                 synced_audio_path = os.path.join(STORAGE_DIR, synced_audio_name)
                 
-                fit_audio_to_duration(raw_audio_path, synced_audio_path, target_duration=target_dur)
-                audio_to_use = synced_audio_path
+                fitted_duration = fit_audio_to_duration(raw_audio_path, synced_audio_path, target_duration=target_dur)
+                if fitted_duration > 0 and os.path.exists(synced_audio_path):
+                    audio_to_use = synced_audio_path
             else:
                 audio_to_use = None
 
@@ -818,6 +932,9 @@ async def process_dubbing(payload: DubbingProcessRequest):
         master_dubbed_path = os.path.join(STORAGE_DIR, master_dubbed_name)
 
         build_ok = await build_dubbed_audio_track(processed_segments, total_duration, master_dubbed_path)
+
+        if not build_ok:
+            raise RuntimeError("No audible dubbed speech was generated. Check that the source has transcript segments and that the selected voice can synthesize audio.")
 
         cursor.execute("""
             UPDATE dubbing_projects

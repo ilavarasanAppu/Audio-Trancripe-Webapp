@@ -1,7 +1,8 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Upload, Languages, Loader2, Captions, Music, Sparkles } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { ID3Writer } from 'browser-id3-writer';
+import { api } from '../services/api';
 
 const LANGUAGES = [
   { label: 'Tamil (தமிழ்)', value: 'ta' },
@@ -21,52 +22,6 @@ export const BrowserTranscriber: React.FC = () => {
   const [transcript, setTranscript] = useState('');
   const [chunks, setChunks] = useState<any[]>([]);
   
-  const worker = useRef<Worker | null>(null);
-
-  useEffect(() => {
-    if (!worker.current) {
-      worker.current = new Worker(new URL('../worker.ts', import.meta.url), {
-        type: 'module',
-      });
-    }
-
-    const onMessage = (e: MessageEvent) => {
-      const { status, file, progress, message, output } = e.data;
-
-      if (status === 'initiate') {
-        setStatus(`Loading: ${file || 'model'}...`);
-      } else if (status === 'progress') {
-        if (typeof progress === 'number') {
-          setProgress(progress);
-          setStatus(`Downloading model... ${Math.round(progress)}%`);
-        }
-      } else if (status === 'done' || status === 'ready') {
-        setStatus('Model loaded. Ready to transcribe.');
-        setProgress(100);
-      } else if (status === 'update') {
-        const { text } = e.data;
-        if (text) {
-          setTranscript((prev) => prev + text);
-        }
-      } else if (status === 'complete') {
-        if (output) {
-          setTranscript(output.text);
-          setChunks(output.chunks || []);
-        }
-        setIsProcessing(false);
-        setStatus('Transcription complete!');
-      } else if (status === 'error') {
-        setIsProcessing(false);
-        setStatus(`Error: ${message}`);
-      }
-    };
-
-    worker.current.addEventListener('message', onMessage);
-    return () => {
-      worker.current?.removeEventListener('message', onMessage);
-    };
-  }, []);
-
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       setFile(e.target.files[0]);
@@ -77,40 +32,30 @@ export const BrowserTranscriber: React.FC = () => {
   };
 
   const handleTranscribe = async () => {
-    if (!file || !worker.current) return;
+    if (!file) return;
     setIsProcessing(true);
+    setProgress(0);
     setTranscript('');
     setChunks([]);
     setStatus('Decoding audio...');
 
     try {
-      const arrayBuffer = await file.arrayBuffer();
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
-        sampleRate: 16000,
-      });
-
-      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-      let audio: Float32Array;
-
-      if (audioBuffer.numberOfChannels === 2) {
-        const SCALING_FACTOR = Math.SQRT1_2;
-        const left = audioBuffer.getChannelData(0);
-        const right = audioBuffer.getChannelData(1);
-        audio = new Float32Array(left.length);
-        for (let i = 0; i < audioBuffer.length; ++i) {
-          audio[i] = SCALING_FACTOR * (left[i] + right[i]);
-        }
-      } else {
-        audio = audioBuffer.getChannelData(0);
-      }
-
-      setStatus('Running in-browser Whisper WASM model...');
-      worker.current.postMessage({
-        audio,
-        model: 'Xenova/whisper-tiny',
-        language,
-        subtask: 'transcribe',
-      });
+      setStatus('Transcribing with the selected local Whisper model on the available GPU...');
+      const result = await api.transcribeAudio(file, language);
+      const resultChunks = (result.chunks || []).map((chunk: any) => ({
+        ...chunk,
+        timestamp: [chunk.start_time, chunk.end_time],
+      }));
+      setTranscript(result.full_transcript || '');
+      setChunks(resultChunks);
+      const runtime = result.runtime;
+      const device = runtime?.device || 'CPU';
+      setProgress(100);
+      const runtimeNote = runtime?.gpu_available && !runtime?.gpu_ready
+        ? ` · GPU unavailable: ${runtime.gpu_error}`
+        : '';
+      setStatus(`Transcription complete · ${result.model} · ${device.toUpperCase()}${runtimeNote}`);
+      setIsProcessing(false);
     } catch (err: any) {
       setIsProcessing(false);
       setStatus(`Failed to process audio: ${err.message}`);
@@ -174,10 +119,10 @@ export const BrowserTranscriber: React.FC = () => {
           <div>
             <h2 className="card-title">
               <Sparkles className="text-indigo-400" size={20} />
-              <span>Fast In-Browser Whisper Transcriber (Client WASM)</span>
+              <span>Local Whisper Transcriber</span>
             </h2>
             <p className="card-subtitle">
-              Run Whisper directly inside your web browser with zero server uploads. Transcribe audio locally on your CPU.
+              Transcribe on this computer with the selected local Whisper model. The backend uses the NVIDIA GPU when available.
             </p>
           </div>
         </div>
@@ -228,7 +173,7 @@ export const BrowserTranscriber: React.FC = () => {
             disabled={!file || isProcessing}
           >
             {isProcessing ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
-            <span>{isProcessing ? 'Processing in Browser...' : 'Start Local Transcription'}</span>
+              <span>{isProcessing ? 'Transcribing locally...' : 'Start Local Transcription'}</span>
           </button>
         </div>
 

@@ -65,9 +65,10 @@ export const AudioRAG: React.FC = () => {
   const handleIngestSingle = async (fileId: number) => {
     try {
       await api.ingestFile(fileId);
-      await loadFiles();
     } catch (err: any) {
       alert(`Transcription error: ${err.message}`);
+    } finally {
+      await loadFiles();
     }
   };
 
@@ -197,12 +198,12 @@ export const AudioRAG: React.FC = () => {
                       </span>
                     </td>
                     <td>
-                      {file.status === 'pending' ? (
+                      {file.status === 'pending' || file.status === 'error' || (file.status === 'indexed' && (file.chunk_count ?? 0) === 0) ? (
                         <button 
                           className="btn-secondary text-xs py-1 px-2.5"
                           onClick={() => handleIngestSingle(file.id)}
                         >
-                          Index Now
+                          {file.status === 'pending' ? 'Index Now' : 'Retry Transcription'}
                         </button>
                       ) : (
                         <span className="text-xs text-gray-500">Ready</span>

@@ -109,6 +109,7 @@ export interface CustomModelItem {
   extension: string;
   size_mb: number;
   model_type: string;
+  asr_compatible?: boolean;
 }
 
 export interface DoctorReport {
@@ -118,6 +119,7 @@ export interface DoctorReport {
   packages: Array<{ package: string; status: string; version?: string; installed: boolean; error?: string }>;
   ffmpeg: { installed: boolean; path: string };
   asr_engines: { faster_whisper: boolean; sarvam_saaras: boolean; browser_wasm: boolean };
+  asr_runtime?: { device: string; compute_type: string; gpu_available: boolean; gpu_ready?: boolean; gpu_count: number; gpu_error?: string };
   tts_engines: { edge_neural: boolean; sarvam_bulbul: boolean; deep_translator: boolean };
   python: { python_version: string; executable: string; platform: string };
 }
@@ -211,6 +213,15 @@ export const api = {
       body: formData
     });
     return res.json();
+  },
+  transcribeAudio: async (file: File, language: string) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('language', language);
+    const res = await fetch(`${API_BASE}/transcribe`, { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Transcription failed');
+    return data;
   },
   ingestFile: async (fileId: number, modelSize: string = 'base', language: string = 'auto', asrEngine: string = 'faster_whisper', customModelPath?: string) => {
     const res = await fetch(`${API_BASE}/ingest`, {

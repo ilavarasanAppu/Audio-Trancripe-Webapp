@@ -35,7 +35,7 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, onOpenS
     { id: 'rag', label: '2. Audio Q&A & Search', icon: Search, desc: 'Semantic Vector Retrieval' },
     { id: 'speakers', label: '3. Voice Classifier', icon: Users, desc: 'Group By Person' },
     { id: 'work_capture', label: '4. Work Capture', icon: FolderOutput, desc: 'Batch Copy & Export' },
-    { id: 'browser_transcribe', label: '5. Fast Transcriber', icon: Sparkles, desc: 'Client WASM Whisper' },
+    { id: 'browser_transcribe', label: '5. Fast Transcriber', icon: Sparkles, desc: 'Local Whisper · GPU when available' },
   ];
 
   return (

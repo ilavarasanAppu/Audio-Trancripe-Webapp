@@ -25,6 +25,7 @@ Functions:
 
 import os
 import sys
+import ctypes
 import httpx
 import soundfile as sf
 import librosa
@@ -40,6 +41,34 @@ SUPPORTED_MODEL_EXTENSIONS = {".bin", ".pth", ".pt", ".safetensors", ".nemo", ".
 
 # Global cache to reuse loaded Whisper models in memory
 _WHISPER_MODELS: Dict[str, WhisperModel] = {}
+
+
+def get_asr_runtime() -> Dict[str, Any]:
+    """Prefer the NVIDIA GPU when CTranslate2 has CUDA support available."""
+    try:
+        import ctranslate2
+        device_count = int(ctranslate2.get_cuda_device_count())
+        if device_count > 0:
+            required_libraries = (
+                ("cublas64_12.dll", "cudnn64_9.dll") if os.name == "nt"
+                else ("libcublas.so.12", "libcudnn.so.9")
+            )
+            missing = []
+            for library in required_libraries:
+                try:
+                    (ctypes.WinDLL if os.name == "nt" else ctypes.CDLL)(library)
+                except OSError:
+                    missing.append(library)
+            if missing:
+                return {
+                    "device": "cpu", "compute_type": "int8", "gpu_available": True,
+                    "gpu_ready": False, "gpu_count": device_count,
+                    "gpu_error": f"CUDA device found, but required runtime libraries are missing: {', '.join(missing)}",
+                }
+            return {"device": "cuda", "compute_type": "float16", "gpu_available": True, "gpu_ready": True, "gpu_count": device_count}
+        return {"device": "cpu", "compute_type": "int8", "gpu_available": False, "gpu_count": 0}
+    except Exception as exc:
+        return {"device": "cpu", "compute_type": "int8", "gpu_available": False, "gpu_count": 0, "gpu_error": str(exc)}
 
 def scan_custom_models_directory(directory_path: str) -> List[Dict[str, Any]]:
     """
@@ -76,7 +105,10 @@ def scan_multiple_custom_models_directories(directories: List[str]) -> List[Dict
                 
                 if len(found_markers) >= 2 or "model.bin" in [f.lower() for f in files] or "model.safetensors" in [f.lower() for f in files]:
                     folder_path = os.path.abspath(root)
-                    if folder_path not in seen_paths and folder_path != os.path.abspath(directory_path):
+                    # The configured directory itself may already be the model
+                    # folder (for example, a user points directly at a folder
+                    # containing model.bin). Include it in the discovered list.
+                    if folder_path not in seen_paths:
                         total_size = sum(os.path.getsize(os.path.join(root, f)) for f in files if os.path.isfile(os.path.join(root, f)))
                         folder_name = os.path.basename(folder_path)
                         
@@ -94,7 +126,8 @@ def scan_multiple_custom_models_directories(directories: List[str]) -> List[Dict
                             "format": format_type,
                             "extension": "folder",
                             "size_mb": round(total_size / (1024 * 1024), 2),
-                            "model_type": "ASR / Speech Model"
+                            "model_type": "ASR / Speech Model",
+                            "asr_compatible": "model.bin" in [f.lower() for f in files] and "config.json" in [f.lower() for f in files],
                         })
                         seen_paths.add(folder_path)
 
@@ -124,7 +157,8 @@ def scan_multiple_custom_models_directories(directories: List[str]) -> List[Dict
                                 "format": format_name,
                                 "extension": ext.replace(".", ""),
                                 "size_mb": round(file_size / (1024 * 1024), 2),
-                                "model_type": "ASR / Neural Model"
+                                "model_type": "ASR / Neural Model",
+                                "asr_compatible": False,
                             })
                             seen_paths.add(file_path)
         except Exception as e:
@@ -136,16 +170,21 @@ def scan_multiple_custom_models_directories(directories: List[str]) -> List[Dict
 
 def get_whisper_model(
     model_size_or_path: str = "base", 
-    device: str = "cpu", 
-    compute_type: str = "int8"
+    device: Optional[str] = None,
+    compute_type: Optional[str] = None,
+    media_file_path: Optional[str] = None,
 ) -> WhisperModel:
     """
     Loads and caches a Whisper model in memory.
     Supports standard sizes ('tiny', 'base', 'small', 'medium') OR a direct custom model path / folder!
     """
-    # Check if a custom model path is provided or set in DB
-    custom_model_path = get_setting("selected_custom_model", "")
-    target_model = custom_model_path if (custom_model_path and os.path.exists(custom_model_path)) else model_size_or_path
+    # The caller resolves the selected model path. Do not replace an explicit
+    # request with the saved global setting, which made model selection ineffective.
+    target_model = model_size_or_path
+
+    runtime = get_asr_runtime()
+    device = device or runtime["device"]
+    compute_type = compute_type or runtime["compute_type"]
 
     cache_key = f"{target_model}_{device}_{compute_type}"
     if cache_key not in _WHISPER_MODELS:
@@ -153,8 +192,19 @@ def get_whisper_model(
         try:
             _WHISPER_MODELS[cache_key] = WhisperModel(target_model, device=device, compute_type=compute_type)
         except Exception as e:
-            print(f"[ASR] Failed to load '{target_model}', falling back to 'base': {e}")
-            _WHISPER_MODELS[cache_key] = WhisperModel("base", device=device, compute_type=compute_type)
+            from error_logging import write_error
+            write_error(
+                error_code="ASR_MODEL_LOAD_FAILED",
+                error_details=str(e),
+                exc=e,
+                context={
+                    "selected_model_path": target_model,
+                    "device": device,
+                    "compute_type": compute_type,
+                    "media_file_path": media_file_path,
+                },
+            )
+            raise
             
     return _WHISPER_MODELS[cache_key]
 
@@ -250,45 +300,67 @@ def transcribe_with_faster_whisper(
     """
     Transcribes audio offline using Faster-Whisper or custom model with timestamps.
     """
-    model = get_whisper_model(model_size_or_path=model_size_or_path)
     lang_param = None if (not language or language == "auto") else language
-    
-    segments, info = model.transcribe(
-        file_path,
-        language=lang_param,
-        beam_size=5,
-        word_timestamps=False,
-        vad_filter=True,
-        vad_parameters=dict(min_silence_duration_ms=500)
-    )
+    runtime = get_asr_runtime()
 
-    detected_lang = info.language
-    duration = info.duration
+    def run(device: str, compute_type: str):
+        model = get_whisper_model(
+            model_size_or_path=model_size_or_path,
+            device=device,
+            compute_type=compute_type,
+            media_file_path=file_path,
+        )
+        segments, info = model.transcribe(
+            file_path,
+            language=lang_param,
+            beam_size=5,
+            word_timestamps=False,
+            # Avoid filtering singing, quiet speech, or noisy recordings.
+            vad_filter=False,
+        )
+        output_chunks: List[Dict[str, Any]] = []
+        full_text: List[str] = []
+        for idx, seg in enumerate(segments):
+            cleaned_text = seg.text.strip()
+            if not cleaned_text:
+                continue
+            full_text.append(cleaned_text)
+            output_chunks.append({
+                "chunk_index": idx,
+                "start_time": round(seg.start, 2),
+                "end_time": round(seg.end, 2),
+                "text": cleaned_text,
+                "language": info.language,
+            })
+        return info.language, info.duration, output_chunks, " ".join(full_text)
 
-    chunks: List[Dict[str, Any]] = []
-    full_transcript_parts: List[str] = []
+    try:
+        detected_lang, duration, chunks, transcript = run(runtime["device"], runtime["compute_type"])
+    except Exception as exc:
+        if runtime["device"] != "cuda":
+            raise
+        from error_logging import write_error
+        write_error(
+            error_code="ASR_GPU_RUNTIME_FAILED",
+            error_details=str(exc),
+            exc=exc,
+            context={"selected_model_path": model_size_or_path, "media_file_path": file_path, "fallback_device": "cpu"},
+        )
+        _WHISPER_MODELS.pop(f"{model_size_or_path}_cuda_float16", None)
+        detected_lang, duration, chunks, transcript = run("cpu", "int8")
 
-    for idx, seg in enumerate(segments):
-        cleaned_text = seg.text.strip()
-        if not cleaned_text:
-            continue
-            
-        full_transcript_parts.append(cleaned_text)
-        chunks.append({
-            "chunk_index": idx,
-            "start_time": round(seg.start, 2),
-            "end_time": round(seg.end, 2),
-            "text": cleaned_text,
-            "language": detected_lang
-        })
-
-    return {
+    result = {
         "language": detected_lang,
-        "full_transcript": " ".join(full_transcript_parts),
+        "full_transcript": transcript,
         "duration": duration,
         "chunks": chunks,
         "engine": "faster_whisper"
     }
+    if not result["full_transcript"].strip():
+        raise RuntimeError(
+            "The selected Whisper model returned no speech. Check the audio, language, and model selection, then retry."
+        )
+    return result
 
 def transcribe_audio_file(
     file_path: str,

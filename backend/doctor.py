@@ -59,6 +59,12 @@ def run_diagnostics() -> Dict[str, Any]:
         "browser_wasm": True
     }
 
+    try:
+        from transcription import get_asr_runtime
+        asr_runtime = get_asr_runtime()
+    except Exception as exc:
+        asr_runtime = {"device": "cpu", "compute_type": "int8", "gpu_available": False, "gpu_count": 0, "gpu_error": str(exc)}
+
     # Check TTS engines
     tts_engines = {
         "edge_neural": check_package("edge_tts")["installed"],
@@ -75,6 +81,7 @@ def run_diagnostics() -> Dict[str, Any]:
         "packages": packages_status,
         "ffmpeg": check_ffmpeg(),
         "asr_engines": asr_engines,
+        "asr_runtime": asr_runtime,
         "tts_engines": tts_engines,
         "python": check_python_environment()
     }

@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { api, type Speaker } from '../services/api';
 
-export const SpeakerClassifier: React.FC = () => {
+export const SpeakerClassifier: React.FC<{ active?: boolean }> = ({ active = true }) => {
   const [speakers, setSpeakers] = useState<Speaker[]>([]);
   const [editingSpeakerId, setEditingSpeakerId] = useState<number | null>(null);
   const [editName, setEditName] = useState('');
@@ -14,8 +14,13 @@ export const SpeakerClassifier: React.FC = () => {
   const [speakerFilesData, setSpeakerFilesData] = useState<{ files: any[]; segments: any[] } | null>(null);
 
   useEffect(() => {
-    loadSpeakers();
-  }, []);
+    if (active) {
+      void loadSpeakers();
+      if (selectedSpeakerId !== null) {
+        void api.getSpeakerFiles(selectedSpeakerId).then(setSpeakerFilesData).catch(console.error);
+      }
+    }
+  }, [active, selectedSpeakerId]);
 
   const loadSpeakers = async () => {
     try {
@@ -95,7 +100,7 @@ export const SpeakerClassifier: React.FC = () => {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {filteredSpeakers.length === 0 ? (
             <div className="col-span-3 text-center py-8 text-gray-500 text-xs">
-              No speakers detected yet. Index audio or video files in Tab 2 (Audio RAG) first.
+              No speakers detected yet. Retry transcription for files with zero segments in Audio Q&A & Search first.
             </div>
           ) : (
             filteredSpeakers.map((sp) => (

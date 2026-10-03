@@ -117,6 +117,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
       const res = await api.scanCustomModels(dirs);
       setDetectedModels(res.models || []);
       setModelScanStatus(`Gathered ${res.total_models} supported model(s) across ${res.directories.length} folder(s)!`);
+      window.dispatchEvent(new Event('custom-models-updated'));
     } catch (err: any) {
       setModelScanStatus(`Scan error: ${err.message}`);
     } finally {
@@ -165,6 +166,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
         custom_models_dir: customModelsDirs.length > 0 ? customModelsDirs[0] : '',
         selected_custom_model: selectedCustomModel,
       });
+      window.dispatchEvent(new Event('custom-models-updated'));
       setStatusMessage('Settings saved successfully!');
       setTimeout(() => {
         setStatusMessage('');
@@ -200,29 +202,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
 
         <div className="modal-body">
           {/* SECTION 1: MULTIPLE CUSTOM MODEL FOLDERS & GATHERING */}
-          <div className="p-4 rounded-xl bg-gray-900 border border-gray-800 space-y-4">
-            <div className="flex justify-between items-center">
-              <h3 className="text-xs font-bold text-indigo-400 uppercase tracking-wider flex items-center gap-2">
+          <div className="model-library">
+            <div className="model-library-header">
+              <h3 className="model-library-title">
                 <Layers size={14} />
-                <span>Multi-Folder Model Gatherer (.bin, .pth, .safetensors, .nemo, .onnx)</span>
+                <span>Local ASR Model Library</span>
               </h3>
               <span className="badge-pill bg-indigo-500/20 text-indigo-300 text-[10px]">
                 {customModelsDirs.length} Folder(s) Configured
               </span>
             </div>
 
-            <p className="text-xs text-gray-400">
-              Add multiple different directories from your hard drives. VaniScript AI will scan and gather all local models (.bin, .pth, .pt, .safetensors, .nemo, .onnx, and CTranslate2 folders) into a single consolidated library.
+            <p className="model-library-intro">
+              Add a local folder to scan for models. Faster-Whisper can run CTranslate2 model folders containing both model.bin and config.json; other detected files remain visible in the library but cannot be selected for transcription.
             </p>
 
             {/* Folder Input + Add Button */}
-            <div className="flex gap-2 items-center">
-              <div className="relative flex-1">
-                <Folder size={14} className="absolute left-3 top-3 text-gray-400" />
+            <div className="model-folder-toolbar">
+              <div className="model-folder-input-wrap">
+                <Folder size={16} className="model-folder-icon" />
                 <input
                   type="text"
-                  className="form-input pl-8 text-xs font-mono"
-                  placeholder="e.g. D:\AI_Models or C:\Users\ela\.cache\models"
+                  className="form-input model-folder-input"
+                  placeholder="Paste a local folder path, e.g. D:\AI_Models"
                   value={newFolderPath}
                   onChange={(e) => setNewFolderPath(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') handleAddFolder(); }}
@@ -231,7 +233,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
 
               <button
                 type="button"
-                className="btn-primary text-xs flex items-center gap-1 px-3 h-[38px] shrink-0"
+                className="btn-primary model-folder-action"
                 onClick={handleAddFolder}
                 disabled={!newFolderPath.trim()}
               >
@@ -241,7 +243,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
 
               <button
                 type="button"
-                className="btn-secondary text-xs flex items-center gap-1.5 px-3.5 h-[38px] shrink-0"
+                className="btn-secondary model-folder-action"
                 onClick={() => handleScanMultipleFolders()}
                 disabled={isScanningModels || customModelsDirs.length === 0}
               >
@@ -252,13 +254,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
 
             {/* Configured Folders List */}
             {customModelsDirs.length > 0 && (
-              <div className="space-y-1.5 pt-1">
-                <span className="text-[10px] text-gray-400 uppercase font-semibold block">
+              <div className="model-folder-list">
+                <span className="model-library-label">
                   Configured Model Directories:
                 </span>
-                <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
+                <div className="model-folder-items">
                   {customModelsDirs.map((dir, idx) => (
-                    <div key={idx} className="flex items-center justify-between p-2 rounded-lg bg-gray-800/80 border border-gray-700 text-xs">
+                    <div key={idx} className="model-folder-row">
                       <div className="flex items-center gap-2 truncate">
                         <Folder size={12} className="text-indigo-400 shrink-0" />
                         <span className="font-mono text-gray-200 truncate">{dir}</span>
@@ -278,12 +280,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
             )}
 
             {modelScanStatus && (
-              <p className="text-[11px] font-mono text-indigo-300">{modelScanStatus}</p>
+              <p className="model-scan-status">{modelScanStatus}</p>
             )}
 
             {/* Gathered Models List & Selector */}
-            {detectedModels.length > 0 && (
-              <div className="space-y-2 pt-2 border-t border-gray-800">
+            <div className="model-results">
+              <div className="model-results-header">
                 <div className="flex justify-between items-center">
                   <span className="text-[11px] text-gray-400 uppercase font-semibold">
                     All Gathered Models ({detectedModels.length}):
@@ -301,14 +303,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                     </div>
                   )}
                 </div>
+              </div>
 
-                <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+              <div className="model-options-list">
                   {/* Default Built-in Option */}
                   <div
-                    className={`p-2.5 rounded-lg border flex justify-between items-center text-xs cursor-pointer transition-all ${
-                      selectedCustomModel === '' ? 'bg-indigo-950/40 border-indigo-500/60' : 'bg-gray-800/60 border-gray-700 hover:border-gray-600'
-                    }`}
+                    role="button"
+                    tabIndex={0}
+                    className={`model-choice ${selectedCustomModel === '' ? 'selected' : ''}`}
                     onClick={() => setSelectedCustomModel('')}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setSelectedCustomModel(''); }}
                   >
                     <div className="flex items-center gap-2">
                       <span className="font-semibold text-gray-200">Use Standard Faster-Whisper Built-in</span>
@@ -318,36 +322,41 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
 
                   {filteredModels.map((m, idx) => {
                     const isSelected = selectedCustomModel === m.path;
+                    const isSupported = Boolean(m.asr_compatible);
                     return (
                       <div
+                        role={isSupported ? 'button' : undefined}
+                        tabIndex={isSupported ? 0 : -1}
+                        aria-disabled={!isSupported}
                         key={idx}
-                        className={`p-2.5 rounded-lg border flex justify-between items-center text-xs cursor-pointer transition-all ${
-                          isSelected ? 'bg-indigo-950/40 border-indigo-500/60 shadow-sm' : 'bg-gray-800/60 border-gray-700 hover:border-gray-600'
-                        }`}
-                        onClick={() => setSelectedCustomModel(m.path)}
+                        className={`model-choice ${isSelected ? 'selected' : ''} ${isSupported ? '' : 'unsupported'}`}
+                        onClick={() => { if (isSupported) setSelectedCustomModel(m.path); }}
+                        onKeyDown={(e) => { if (isSupported && (e.key === 'Enter' || e.key === ' ')) setSelectedCustomModel(m.path); }}
                       >
                         <div className="flex items-center gap-2 overflow-hidden">
                           <FileCode size={14} className="text-indigo-400 shrink-0" />
-                          <div className="truncate">
-                            <span className="font-semibold text-gray-200 block truncate">{m.name}</span>
-                            <span className="text-[10px] text-gray-400 font-mono block truncate">
+                          <div className="model-choice-copy">
+                            <span className="model-choice-name">{m.name}</span>
+                            <span className="model-choice-meta">
                               {m.format} • {m.size_mb} MB {m.folder_origin ? `• from: ${m.folder_origin}` : ''}
                             </span>
                           </div>
                         </div>
 
                         <div className="flex items-center gap-2 shrink-0 ml-2">
-                          <span className="badge-pill bg-gray-700 text-gray-300 text-[10px] font-mono uppercase">
-                            {m.extension}
+                          <span className={`model-support-badge ${isSupported ? 'supported' : ''}`}>
+                            {isSupported ? 'ASR ready' : m.extension}
                           </span>
                           {isSelected && <CheckCircle size={14} className="text-indigo-400" />}
                         </div>
                       </div>
                     );
                   })}
-                </div>
+                  {detectedModels.length === 0 && (
+                    <p className="model-empty-state">No model files found yet. Add a folder above and scan it to populate the ASR selector.</p>
+                  )}
               </div>
-            )}
+            </div>
           </div>
 
           {/* SECTION 2: AI ENGINE PRESETS */}
@@ -490,7 +499,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
 
             {doctorReport && (
               <div className="space-y-3">
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
                   <div className="p-2.5 rounded-lg bg-gray-800 border border-gray-700 flex flex-col">
                     <span className="text-[11px] text-gray-400">Local Whisper ASR</span>
                     <span className="text-xs font-bold text-emerald-400 flex items-center gap-1 mt-0.5">
@@ -514,6 +523,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                     <span className="text-xs font-bold text-emerald-400 flex items-center gap-1 mt-0.5">
                       <CheckCircle2 size={12} /> Ready
                     </span>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-gray-800 border border-gray-700 flex flex-col">
+                    <span className="text-[11px] text-gray-400">Whisper compute</span>
+                    <span className={`text-xs font-bold flex items-center gap-1 mt-0.5 ${doctorReport.asr_runtime?.gpu_ready ? 'text-emerald-400' : 'text-amber-300'}`}>
+                      {doctorReport.asr_runtime?.gpu_ready ? 'NVIDIA GPU ready' : `CPU fallback${doctorReport.asr_runtime?.gpu_available ? ' · GPU libraries missing' : ''}`}
+                    </span>
+                    {doctorReport.asr_runtime?.gpu_error && <span className="text-[10px] text-gray-400 mt-1 break-words">{doctorReport.asr_runtime.gpu_error}</span>}
                   </div>
                 </div>
 
